@@ -71,10 +71,6 @@ object  LoadFile {
   
   def loadFile_IndexedRow(file:String) = {
     
-    val papersDF = sqlContext.load("jdbc",Map("driver" -> MYSQL_DRIVER, "url" -> MYSQL_CONNECTION_URL,"dbtable" -> "paper_label"))
-    println( "getting rows ..........")
-    val indexedPapers = papersDF.map { x => Map[String, Integer](x.getString(0)-> x.getInt(2)) }.reduce(_++_)
-    
     val lines = sc.textFile(file)
     
     val entries = lines.flatMap { line => 
