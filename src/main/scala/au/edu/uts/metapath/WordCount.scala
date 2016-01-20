@@ -1,4 +1,4 @@
-package au.edu.uts.graph
+package au.edu.uts.metapath
 
 import org.apache.spark.SparkConf
 import org.apache.spark.SparkContext

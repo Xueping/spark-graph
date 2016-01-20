@@ -18,7 +18,6 @@
 package org.apache.spark.mllib.linalg.distributed
 
 import scala.collection.mutable.ArrayBuffer
-
 import org.apache.spark.Logging
 import org.apache.spark.Partitioner
 import org.apache.spark.SparkException
@@ -30,8 +29,9 @@ import org.apache.spark.mllib.linalg.Matrix
 import org.apache.spark.mllib.linalg.SparseMatrix
 import org.apache.spark.rdd.RDD
 import org.apache.spark.storage.StorageLevel
-
 import breeze.linalg.{ DenseMatrix => BDM }
+import au.edu.uts.rankclass.RankDistribution
+import au.edu.uts.rankclass.RelationalMatrix
 
 /**
  * A grid partitioner, which uses a regular grid to partition coordinates.
@@ -358,41 +358,6 @@ class BlockMatrix @Since("1.3.0") (
     }
   }
 
-   
-  def divide(diagonal: Map[Long, Double]): BlockMatrix = {
-    
-    val entryRDD = blocks.flatMap { case ((blockRowIndex, blockColIndex), mat) =>
-      val rowStart = blockRowIndex.toLong * rowsPerBlock
-      val colStart = blockColIndex.toLong * colsPerBlock
-      val entryValues = new ArrayBuffer[MatrixEntry]()
-      mat.foreachActive { (i, j, v) =>
-        if (v != 0.0) entryValues.append(new MatrixEntry(rowStart + i, colStart + j, 2.0*v/(diagonal(rowStart + i)+diagonal(colStart + j))))
-      }
-      entryValues
-    }
-    new CoordinateMatrix(entryRDD, numRows(), numCols()).toBlockMatrix()
-  } 
-   
-  def elementwile_divide(other: BlockMatrix): BlockMatrix = {
-     
-    if (rowsPerBlock == other.rowsPerBlock && colsPerBlock == other.colsPerBlock) {
-      val addedBlocks = blocks.cogroup(other.blocks, createPartitioner())
-        .map { case ((blockRowIndex, blockColIndex), (a, b)) =>
-          if (a.size > 1 || b.size > 1) {
-            throw new SparkException("There are multiple MatrixBlocks with indices: " +
-              s"($blockRowIndex, $blockColIndex). Please remove them.")
-          }
-          {
-            val result =  a.head.toBreeze :/ a.head.toBreeze
-            new MatrixBlock((blockRowIndex, blockColIndex), Matrices.fromBreeze(result))
-          }
-      }
-      new BlockMatrix(addedBlocks, rowsPerBlock, colsPerBlock, numRows(), numCols())
-    } else {
-      throw new SparkException("Cannot add matrices with different block dimensions")
-    }
-  }
-
   /**
    * Left multiplies this [[BlockMatrix]] to `other`, another [[BlockMatrix]]. The `colsPerBlock`
    * of this matrix must equal the `rowsPerBlock` of `other`. If `other` contains
@@ -442,5 +407,89 @@ class BlockMatrix @Since("1.3.0") (
       throw new SparkException("colsPerBlock of A doesn't match rowsPerBlock of B. " +
         s"A.colsPerBlock: $colsPerBlock, B.rowsPerBlock: ${other.rowsPerBlock}")
     }
+  }
+   
+  def divide(diagonal: Map[Long, Double]): BlockMatrix = {
+    
+    val entryRDD = blocks.flatMap { case ((blockRowIndex, blockColIndex), mat) =>
+      val rowStart = blockRowIndex.toLong * rowsPerBlock
+      val colStart = blockColIndex.toLong * colsPerBlock
+      val entryValues = new ArrayBuffer[MatrixEntry]()
+      mat.foreachActive { (i, j, v) =>
+        if (v != 0.0) entryValues.append(new MatrixEntry(rowStart + i, colStart + j, 2.0*v/(diagonal(rowStart + i)+diagonal(colStart + j))))
+      }
+      entryValues
+    }
+    new CoordinateMatrix(entryRDD, numRows(), numCols()).toBlockMatrix()
+  } 
+  
+  def multiply(rankDist : Array[RankDistribution],rm: RelationalMatrix, t:Int): BlockMatrix = {
+    
+    val entryRDD = blocks.flatMap { case ((blockRowIndex, blockColIndex), mat) =>
+      val rowStart = blockRowIndex.toLong * rowsPerBlock
+      val colStart = blockColIndex.toLong * colsPerBlock
+      val entryValues = new ArrayBuffer[MatrixEntry]()
+      mat.foreachActive { (i, j, v) =>
+        //get the item whose classification is k, object type is i and id is x
+        val row = rowStart + i
+        val col = colStart + j
+        val i_RD = rankDist.filter { i => i.k == rm.k && i.m == rm.i && i.x == row }(0).p
+        //get the Maximal item whose classification is k, object type is i
+        val i_max_RD = rankDist.filter { i => i.k == rm.k && i.m == rm.i}.maxBy { i_max => i_max.p}.p
+        
+        val j_RD = rankDist.filter { j => j.k == rm.k && j.m == rm.j && j.x == col }(0).p
+        val j_max_RD = rankDist.filter { j => j.k == rm.k && j.m == rm.j}.maxBy { j_max => j_max.p}.p
+         var balance = 1.0
+         for(i <- 1 to t){  balance = balance * 2}
+        if (v != 0.0) entryValues.append(new MatrixEntry(rowStart + i, colStart + j, v*(Math.sqrt((i_RD/i_max_RD)*(j_RD/j_max_RD))+1.0/balance)))
+      }
+      entryValues
+    }
+    new CoordinateMatrix(entryRDD, numRows(), numCols()).toBlockMatrix()
+  }
+   
+  def elementwile_divide(other: BlockMatrix): BlockMatrix = {
+     
+    if (rowsPerBlock == other.rowsPerBlock && colsPerBlock == other.colsPerBlock) {
+      val addedBlocks = blocks.cogroup(other.blocks, createPartitioner())
+        .map { case ((blockRowIndex, blockColIndex), (a, b)) =>
+          if (a.size > 1 || b.size > 1) {
+            throw new SparkException("There are multiple MatrixBlocks with indices: " +
+              s"($blockRowIndex, $blockColIndex). Please remove them.")
+          }
+          {
+            val result =  a.head.toBreeze :/ a.head.toBreeze
+            new MatrixBlock((blockRowIndex, blockColIndex), Matrices.fromBreeze(result))
+          }
+      }
+      new BlockMatrix(addedBlocks, rowsPerBlock, colsPerBlock, numRows(), numCols())
+    } else {
+      throw new SparkException("Cannot add matrices with different block dimensions")
+    }
+  }
+
+  def normalizer(rankDist : Array[RankDistribution],rm: RelationalMatrix, t:Int): BlockMatrix = {
+    
+    val entryRDD = blocks.flatMap { case ((blockRowIndex, blockColIndex), mat) =>
+      val rowStart = blockRowIndex.toLong * rowsPerBlock
+      val colStart = blockColIndex.toLong * colsPerBlock
+      val entryValues = new ArrayBuffer[MatrixEntry]()
+      mat.foreachActive { (i, j, v) =>
+        //get the item whose classification is k, object type is i and id is x
+        val row = rowStart + i
+        val col = colStart + j
+        val i_RD = rankDist.filter { i => i.k == rm.k && i.m == rm.i && i.x == row }(0).p
+        //get the Maximal item whose classification is k, object type is i
+        val i_max_RD = rankDist.filter { i => i.k == rm.k && i.m == rm.i}.maxBy { i_max => i_max.p}.p
+        
+        val j_RD = rankDist.filter { j => j.k == rm.k && j.m == rm.j && j.x == col }(0).p
+        val j_max_RD = rankDist.filter { j => j.k == rm.k && j.m == rm.j}.maxBy { j_max => j_max.p}.p
+         var balance = 1.0
+         for(i <- 1 to t){  balance = balance * 2}
+        if (v != 0.0) entryValues.append(new MatrixEntry(rowStart + i, colStart + j, v*(Math.sqrt((i_RD/i_max_RD)*(j_RD/j_max_RD))+1.0/balance)))
+      }
+      entryValues
+    }
+    new CoordinateMatrix(entryRDD, numRows(), numCols()).toBlockMatrix()
   }
 }

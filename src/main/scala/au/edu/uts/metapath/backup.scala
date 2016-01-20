@@ -1,4 +1,4 @@
-package au.edu.uts.graph
+package au.edu.uts.metapath
 
 import org.apache.spark.mllib.linalg.distributed.IndexedRowMatrix
 import org.apache.spark.SparkConf
