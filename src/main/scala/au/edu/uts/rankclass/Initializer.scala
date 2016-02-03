@@ -1,14 +1,16 @@
 package au.edu.uts.rankclass
 
+import scala.collection.mutable.ArrayBuffer
 import scala.tools.nsc.doc.html.page.Index
+
 import org.apache.spark.SparkConf
 import org.apache.spark.SparkContext
+import org.apache.spark.mllib.linalg.DenseMatrix
 import org.apache.spark.mllib.linalg.Matrix
 import org.apache.spark.mllib.linalg.distributed.BlockMatrix
 import org.apache.spark.mllib.linalg.distributed.CoordinateMatrix
 import org.apache.spark.mllib.linalg.distributed.MatrixEntry
 import org.apache.spark.rdd.RDD
-import scala.collection.mutable.ArrayBuffer
 
 
 class Initializer extends Serializable{
@@ -79,14 +81,16 @@ class Initializer extends Serializable{
       new RankDistribution(x.split("\t")(1).toInt,objectType,objectList.indexOf(x.split("\t")(0)),1.0/labelMap(x.split("\t")(1).toInt))
     }.collect()
   }
-  
-  def D_ij(mat: CoordinateMatrix, sc:SparkContext) : BlockMatrix = {
-      val entries = mat.toIndexedRowMatrix().rows.map { x => new MatrixEntry(x.index,x.index, 1.0/Math.sqrt(x.vector.toArray.sum))}.collect()
-      new CoordinateMatrix(sc.parallelize(entries)).toBlockMatrix()
-    }
+
   
   def normalizeRelationalMatrix(sc:SparkContext, mat:CoordinateMatrix): BlockMatrix = {
-    (D_ij(mat,sc).multiply(mat.toBlockMatrix())).multiply(D_ij(mat.transpose(),sc))
+     val d_ij = mat.toIndexedRowMatrix().rows.map { x => new MatrixEntry(x.index,x.index, 1.0/Math.sqrt(x.vector.toArray.sum))}.collect()
+     val d_ijMat = new CoordinateMatrix(sc.parallelize(d_ij)).toBlockMatrix()
+     
+     val d_ji = mat.transpose().toIndexedRowMatrix().rows.map { x => new MatrixEntry(x.index,x.index, 1.0/Math.sqrt(x.vector.toArray.sum))}.collect()
+     val d_jiMat = new CoordinateMatrix(sc.parallelize(d_ji)).toBlockMatrix()
+     
+    (d_ijMat.multiply(mat.toBlockMatrix())).multiply(d_jiMat)
   }
 
   
@@ -231,8 +235,7 @@ class Initializer extends Serializable{
   def getRankDistribution(relationalMats: Array[RelationalMatrix], 
       rankDist : Array[RankDistribution], init_RD : Array[RankDistribution]) : Array[RankDistribution] = {
     
-//    val init_RD_Para = sc.parallelize(init_RD)
-    
+
     init_RD.map { x => { 
       val lambda = 0.2
       val alpha = 0.1
@@ -251,8 +254,9 @@ class Initializer extends Serializable{
               for(nj <- 0 to neighbors.length-1){
                 //get the ranking distributions through filtering the classifications,object type, and id
                 val neighbor_RD = rankDist.filter { n => n.k == x.k && n.m == m && n.item == nj }
-                if (neighbor_RD.size > 0){
-                  itemSum += neighbor_RD(0).p*neighbors(nj)
+                val possiblity = neighbor_RD(0).p
+                if (possiblity > 0){
+                  itemSum += possiblity*neighbors(nj)
                   }
                 }
               itemSum
@@ -264,8 +268,36 @@ class Initializer extends Serializable{
       val thirdTerm = 4 * lambda + alpha
       val updateRD = (firstTerm + secondTerm) / thirdTerm
       new RankDistribution(x.k,x.m,x.x,updateRD)
-      } 
-    }
+    }}
+//    val relMat_Para = relationalMats.map { x => new RelationalMatrixToArray(x.k,x.i,x.j,x.mat.toLocalMatrix()) }
+//    
+//    val init_RD_Para = sc.parallelize(init_RD)
+//    init_RD_Para.map { x => { 
+//      val lambda = 0.2
+//      val alpha = 0.1
+//      
+//      var firstTerm = 0.0
+//      for(m <- 0 to 3){
+//        //get the normalized matrices through filtering the classification, start and end object type
+//        val current_cat_obj_S = relMat_Para.filter { s => s.k == x.k && s.i == x.m && s.j == m}
+//        if (current_cat_obj_S.length > 0){
+//          
+//            val relMat  = current_cat_obj_S(0).array.toBreeze.toDenseMatrix
+//            firstTerm += relMat(x.item.toInt,::).inner.toArray.zipWithIndex.map { case(index, value) => {
+////              get the ranking distributions through filtering the classifications,object type, and id
+//                val neighbor_RD = rankDist.filter { n => n.k == x.k && n.m == m && n.item == index }
+//                val possiblity = neighbor_RD(0).p
+//                possiblity*value
+//              }
+//            }.reduce(_+_)
+//        }
+//      }
+//      val secondTerm = alpha * x.p
+//      val thirdTerm = 4 * lambda + alpha
+//      val updateRD = (firstTerm + secondTerm) / thirdTerm
+//      new RankDistribution(x.k,x.m,x.x,updateRD)
+//      }
+//    }.collect()
   }
   
   def getNetworkStructure(relationalMats: Array[RelationalMatrix], rankDist : Array[RankDistribution], t : Int) : Array[RelationalMatrix] = {
@@ -275,7 +307,7 @@ class Initializer extends Serializable{
 
   def execReinforce() = {
     
-    for(t <- 1 to 5){
+    for(t <- 1 to 2){
       rankDist = getRankDistribution(normalizedMat,rankDist,init_RD)
       relationalMat = getNetworkStructure(relationalMat,rankDist,t)
       normalizedMat = relationalMat.map { x => new RelationalMatrix(x.k,x.i,x.j,normalizeRelationalMatrix(sc,x.mat.toCoordinateMatrix())) }
