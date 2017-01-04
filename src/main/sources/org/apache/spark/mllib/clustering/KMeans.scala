@@ -237,7 +237,6 @@ class KMeans private (
     } else {
       runs
     }
-
     val centers = initialModel match {
       case Some(kMeansCenters) => {
         Array(kMeansCenters.clusterCenters.map(s => new VectorWithNorm(s)))
@@ -250,9 +249,11 @@ class KMeans private (
         }
       }
     }
+    val centerTimeInSeconds = (System.nanoTime() - initStartTime) / (1e9 * 60)
+    println(s" ------------ Initialization with Center took " + "%.3f".format(centerTimeInSeconds) + " minutes.")
+    
     val initTimeInSeconds = (System.nanoTime() - initStartTime) / 1e9
-    logInfo(s"Initialization with $initializationMode took " + "%.3f".format(initTimeInSeconds) +
-      " seconds.")
+    logInfo(s"Initialization with $initializationMode took " + "%.3f".format(initTimeInSeconds) + " seconds.")
 
     val active = Array.fill(numRuns)(true)
     val costs = Array.fill(numRuns)(0.0)
@@ -340,6 +341,7 @@ class KMeans private (
     val (minCost, bestRun) = costs.zipWithIndex.min
 
     logInfo(s"The cost for the best run is $minCost.")
+    println(s" ------------ Initialization with Center took " + "%.3f".format(centerTimeInSeconds) + " minutes.")
 
     new KMeansModel(centers(bestRun).map(_.vector))
   }
@@ -529,6 +531,7 @@ object KMeans {
       k: Int,
       maxIterations: Int): KMeansModel = {
     train(data, k, maxIterations, 1, K_MEANS_PARALLEL)
+//    train(data, k, maxIterations, 1, RANDOM)
   }
 
   /**
